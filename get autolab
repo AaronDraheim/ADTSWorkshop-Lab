@@ -1,0 +1,7 @@
+Import-Module AutomatedLab
+
+$labSources = Get-LabSourcesLocation
+
+Get-LabAvailableOperatingSystem `
+    -Path (Join-Path $labSources 'ISOs') |
+    Format-Table OperatingSystemName, Version, IsoPath -AutoSize
