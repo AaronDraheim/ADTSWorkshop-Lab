@@ -1,0 +1,272 @@
+# This Sample Code is provided for the purpose of illustration only and is not intended to be used
+# in a production environment. THIS SAMPLE CODE AND ANY RELATED INFORMATION ARE PROVIDED "AS IS"
+# WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE IMPLIED
+# WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A PARTICULAR PURPOSE. We grant You a nonexclusive,
+# royalty-free right to use and modify the Sample Code and to reproduce and distribute the object code
+# form of the Sample Code, provided that You agree: (i) to not use Our name, logo, or trademarks to
+# market Your software product in which the Sample Code is embedded; (ii) to include a valid copyright
+# notice on Your software product in which the Sample Code is embedded; and (iii) to indemnify, hold
+# harmless, and defend Us and Our suppliers from and against any claims or lawsuits, including attorneys’
+# fees, that arise or result from the use or distribution of the Sample Code.
+ 
+# This sample script is not supported under any Microsoft standard support program or service.
+# The sample script is provided AS IS without warranty of any kind. Microsoft further disclaims
+# all implied warranties including, without limitation, any implied warranties of merchantability
+# or of fitness for a particular purpose. The entire risk arising out of the use or performance of
+# the sample scripts and documentation remains with you. In no event shall Microsoft, its authors,
+# or anyone else involved in the creation, production, or delivery of the scripts be liable for any
+# damages whatsoever (including, without limitation, damages for loss of business profits, business
+# interruption, loss of business information, or other pecuniary loss) arising out of the use of or
+# inability to use the sample scripts or documentation, even if Microsoft has been advised of the possibility of such damages.
+
+$labName    = 'ADTSWorkshop'
+$labSources = Get-LabSourcesLocation
+$tempFile   = Join-Path -Path $labSources -ChildPath 'temp.txt'
+
+# Retrieve the product key when available
+$ProductKey = $null
+
+if (Test-Path -LiteralPath $tempFile) {
+    try {
+        $encodedProductKey = Get-Content -LiteralPath $tempFile -Raw -ErrorAction Stop
+
+        if (-not [string\]::IsNullOrWhiteSpace($encodedProductKey)) {
+            $ProductKey = [System.Text.Encoding\]::Unicode.GetString(
+                [System.Convert\]::FromBase64String($encodedProductKey.Trim())
+            )
+        }
+    }
+    catch {
+        Write-Warning "The product key file could not be decoded. The virtual machines will be deployed in evaluation mode."
+        $ProductKey = $null
+    }
+}
+
+if (-not $ProductKey) {
+    Write-Warning @"
+Product key not found.
+
+If you already deployed the virtual machines once on this computer, reinstall the ADTS AutomatedLab package to recover the product key.
+
+Otherwise, the virtual machines will be installed in evaluation mode.
+"@
+}
+
+# Create the lab definition and specify where the VMs will be stored
+New-LabDefinition `
+    -Name $labName `
+    -DefaultVirtualizationEngine HyperV `
+    -VmPath (Join-Path -Path $labSources -ChildPath 'VMs')
+
+# Define an isolated AutomatedLab virtual network
+Add-LabVirtualNetworkDefinition `
+    -Name $labName `
+    -AddressSpace '10.10.0.0/16'
+
+# Define the root and child domains
+Add-LabDomainDefinition `
+    -Name 'contoso.com' `
+    -AdminUser 'Administrator' `
+    -AdminPassword 'Pa55word'
+
+Add-LabDomainDefinition `
+    -Name 'corp.contoso.com' `
+    -AdminUser 'Administrator' `
+    -AdminPassword 'Pa99word'
+
+# Default settings used for all machines
+$PSDefaultParameterValues = @{
+    'Add-LabMachineDefinition:Network'          = $labName
+    'Add-LabMachineDefinition:ToolsPath'        = Join-Path -Path $labSources -ChildPath 'Tools'
+    'Add-LabMachineDefinition:DnsServer1'       = '10.10.10.1'
+    'Add-LabMachineDefinition:DnsServer2'       = '10.10.20.1'
+    'Add-LabMachineDefinition:IsDomainJoined'   = $true
+    'Add-LabMachineDefinition:MemoryInMb'       = 1024
+
+    # This value must exactly match Get-LabAvailableOperatingSystem output
+    'Add-LabMachineDefinition:OperatingSystem'  = 'Windows Server 2016 Standard (Desktop Experience)'
+}
+
+if ($ProductKey) {
+    $PSDefaultParameterValues['Add-LabMachineDefinition:ProductKey'] = $ProductKey
+}
+
+# Root domain: contoso.com
+Set-LabInstallationCredential `
+    -Username 'Administrator' `
+    -Password 'Pa55word'
+
+$postInstallActivity = Get-LabPostInstallationActivity `
+    -ScriptFileName 'BuildADTSForest.ps1' `
+    -DependencyFolder (Join-Path -Path $labSources -ChildPath 'PostInstallationActivities\ADTS')
+
+$roles = Get-LabMachineRoleDefinition -Role RootDC
+
+Add-LabMachineDefinition `
+    -Name 'ContosoDC1' `
+    -IpAddress '10.10.10.1' `
+    -DomainName 'contoso.com' `
+    -MemoryInMb 2048 `
+    -Roles $roles `
+    -PostInstallationActivity $postInstallActivity
+
+$roles = Get-LabMachineRoleDefinition -Role DC
+
+Add-LabMachineDefinition `
+    -Name 'ContosoDC2' `
+    -IpAddress '10.10.20.1' `
+    -DomainName 'contoso.com' `
+    -Roles $roles
+
+Add-LabMachineDefinition `
+    -Name 'ContosoMember' `
+    -IpAddress '10.10.10.3' `
+    -MemoryInMb 3072 `
+    -DomainName 'contoso.com' `
+    -Processors 4
+
+# Child domain: corp.contoso.com
+Set-LabInstallationCredential `
+    -Username 'Administrator' `
+    -Password 'Pa99word'
+
+$roles = Get-LabMachineRoleDefinition `
+    -Role FirstChildDC `
+    -Properties @{
+        ParentDomain = 'contoso.com'
+        NewDomain    = 'corp'
+    }
+
+Add-LabMachineDefinition `
+    -Name 'CorpDC1' `
+    -IpAddress '10.10.30.1' `
+    -DomainName 'corp.contoso.com' `
+    -Roles $roles `
+    -PostInstallationActivity $postInstallActivity
+
+# Read-only domain controller
+$roles = Get-LabMachineRoleDefinition `
+    -Role DC `
+    -Properties @{
+        IsReadOnly = $true
+    }
+
+Add-LabMachineDefinition `
+    -Name 'CorpDC2' `
+    -IpAddress '10.10.40.1' `
+    -DomainName 'corp.contoso.com' `
+    -Roles $roles
+
+# Validate the lab definition before deployment
+Write-Host 'Validating the lab definition...' -ForegroundColor Cyan
+Test-LabDefinition -Quiet
+
+# Deploy the lab
+Install-Lab
+
+# Install management tools
+Install-LabWindowsFeature `
+    -ComputerName 'ContosoDC1' `
+    -FeatureName 'RSAT-DFS-Mgmt-Con'
+
+Install-LabWindowsFeature `
+    -ComputerName 'ContosoMember' `
+    -FeatureName 'RSAT' `
+    -IncludeAllSubFeature
+
+Restart-LabVM `
+    -ComputerName 'ContosoMember' `
+    -Wait
+
+# Install Network Monitor
+$networkMonitorInstaller = Join-Path `
+    -Path $labSources `
+    -ChildPath 'PostInstallationActivities\ADTS\NM34_x64.exe'
+
+if (Test-Path -LiteralPath $networkMonitorInstaller) {
+    Install-LabSoftwarePackage `
+        -Path $networkMonitorInstaller `
+        -CommandLine '/Q' `
+        -ComputerName (Get-LabMachine)
+}
+else {
+    Write-Warning "Network Monitor installer not found: $networkMonitorInstaller"
+}
+
+# Copy machine-specific lab scripts and finalize each machine
+$labScriptsRoot = Join-Path `
+    -Path $labSources `
+    -ChildPath 'PostInstallationActivities\ADTS\LabScripts'
+
+Get-LabMachine | ForEach-Object {
+    $machine       = $_
+    $machineName   = $machine.Name
+    $sourceFolder  = Join-Path -Path $labScriptsRoot -ChildPath "LabScripts $machineName"
+
+    if (Test-Path -LiteralPath $sourceFolder) {
+        Copy-LabFileItem `
+            -Path $sourceFolder `
+            -DestinationFolder 'C:\' `
+            -ComputerName $machineName `
+            -ErrorAction Continue
+    }
+    else {
+        Write-Warning "Machine-specific script folder not found: $sourceFolder"
+    }
+
+    Invoke-LabCommand `
+        -ActivityName 'Finalizing Installation' `
+        -ComputerName $machineName `
+        -ScriptBlock {
+
+            if (Test-Path -LiteralPath 'C:\Tools') {
+                Remove-Item `
+                    -LiteralPath 'C:\Tools' `
+                    -Recurse `
+                    -Force
+            }
+
+            $machineLabScripts = "C:\LabScripts $env:COMPUTERNAME"
+
+            if (Test-Path -LiteralPath $machineLabScripts) {
+                if (Test-Path -LiteralPath 'C:\LabScripts') {
+                    Remove-Item `
+                        -LiteralPath 'C:\LabScripts' `
+                        -Recurse `
+                        -Force
+                }
+
+                Rename-Item `
+                    -LiteralPath $machineLabScripts `
+                    -NewName 'LabScripts'
+            }
+
+            Set-DnsClientGlobalSetting `
+                -SuffixSearchList @(
+                    'contoso.com'
+                    'corp.contoso.com'
+                )
+
+            if ($env:COMPUTERNAME -ne 'CONTOSOMEMBER') {
+                Set-CimInstance `
+                    -Namespace 'ROOT/microsoftdfs' `
+                    -Query 'SELECT MaxOfflineTimeInDays FROM DfsrMachineConfig' `
+                    -Property @{
+                        MaxOfflineTimeInDays = 9999
+                    }
+            }
+        }
+}
+
+# Create a clean baseline checkpoint
+Checkpoint-LabVM `
+    -All `
+    -SnapshotName 'Clean Install'
+
+# Remove the temporary product-key file
+Remove-Item `
+    -LiteralPath $tempFile `
+    -Force `
+    -ErrorAction SilentlyContinue
+
+Show-LabInstallationTime
