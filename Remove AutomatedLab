@@ -1,0 +1,9 @@
+Get-Module AutomatedLab* | Remove-Module -Force -ErrorAction SilentlyContinue
+
+Get-InstalledModule AutomatedLab -ErrorAction SilentlyContinue |
+    Uninstall-Module -AllVersions -Force
+
+Install-Module AutomatedLab `
+    -Scope CurrentUser `
+    -Force `
+    -AllowClobber
